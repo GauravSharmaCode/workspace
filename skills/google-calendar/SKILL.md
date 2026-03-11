@@ -1,5 +1,5 @@
 ---
-name: calendar
+name: google-calendar
 description: >
   CRITICAL: You MUST activate this skill BEFORE creating, querying, or managing
   calendar events. Always trigger this skill as the first step when the user

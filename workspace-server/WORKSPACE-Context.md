@@ -172,23 +172,23 @@ filter rather than searching by name alone. Example MIME type queries:
 
 ### Google Docs
 
-- See the **Docs skill** for detailed guidance on document content formatting,
-  creation, editing, tab management, and document organization.
+- See the **Google Docs skill** for detailed guidance on document content
+  formatting, creation, editing, tab management, and document organization.
 
 ### Google Sheets
 
-- See the **Sheets skill** for detailed guidance on finding spreadsheets, output
-  format selection, and range-based operations.
+- See the **Google Sheets skill** for detailed guidance on finding spreadsheets,
+  output format selection, and range-based operations.
 
 ### Google Slides
 
-- See the **Slides skill** for detailed guidance on finding presentations, text
-  extraction, image downloads, and slide thumbnails.
+- See the **Google Slides skill** for detailed guidance on finding
+  presentations, text extraction, image downloads, and slide thumbnails.
 
 ### Google Calendar
 
-- See the **Calendar skill** for detailed guidance on timezone handling, meeting
-  queries, event management, responding to invitations, and scheduling.
+- See the **Google Calendar skill** for detailed guidance on timezone handling,
+  meeting queries, event management, responding to invitations, and scheduling.
 
 ### Gmail
 
@@ -197,8 +197,8 @@ filter rather than searching by name alone. Example MIME type queries:
 
 ### Google Chat
 
-- See the **Chat skill** for detailed guidance on formatting messages, spaces
-  vs. DMs, threading, unread filtering, and space management.
+- See the **Google Chat skill** for detailed guidance on formatting messages,
+  spaces vs. DMs, threading, unread filtering, and space management.
 
 Remember: This guide focuses on **how to think** about using these tools
 effectively. For specific parameter details, refer to the tool descriptions

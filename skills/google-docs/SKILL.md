@@ -1,5 +1,5 @@
 ---
-name: docs
+name: google-docs
 description: >
   CRITICAL: You MUST activate this skill BEFORE creating, editing, or managing
   Google Docs. Always trigger this skill as the first step when the user

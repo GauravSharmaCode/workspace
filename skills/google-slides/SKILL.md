@@ -1,5 +1,5 @@
 ---
-name: slides
+name: google-slides
 description: >
   Activate this skill when the user wants to find, read, or extract content from
   Google Slides presentations. Contains guidance on searching for presentations,

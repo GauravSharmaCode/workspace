@@ -1,5 +1,5 @@
 ---
-name: sheets
+name: google-sheets
 description: >
   Activate this skill when the user wants to find, read, or analyze Google
   Sheets spreadsheets. Contains guidance on searching for spreadsheets, output

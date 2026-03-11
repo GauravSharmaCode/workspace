@@ -1,5 +1,5 @@
 ---
-name: chat
+name: google-chat
 description: >
   CRITICAL: You MUST activate this skill BEFORE sending, reading, or managing
   Google Chat messages. Always trigger this skill as the first step when the
