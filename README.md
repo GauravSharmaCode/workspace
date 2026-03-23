@@ -2,9 +2,12 @@
 
 [![Build Status](https://github.com/gemini-cli-extensions/workspace/actions/workflows/ci.yml/badge.svg)](https://github.com/gemini-cli-extensions/workspace/actions/workflows/ci.yml)
 
-The Google Workspace extension for Gemini CLI brings the power of your Google
-Workspace apps to your command line. Manage your documents, spreadsheets,
-presentations, emails, chat, and calendar events without leaving your terminal.
+The Google Workspace extension brings the power of your Google Workspace apps
+to your command line. Manage your documents, spreadsheets, presentations,
+emails, chat, and calendar events without leaving your terminal.
+
+This extension works as a [Model Context Protocol](https://modelcontextprotocol.io/)
+(MCP) server compatible with **Gemini CLI** and any other MCP-capable agent.
 
 ## Prerequisites
 
@@ -13,12 +16,22 @@ Google account.
 
 ## Installation
 
+### Gemini CLI
+
 Install the Google Workspace extension by running the following command from
 your terminal:
 
 ```bash
 gemini extensions install https://github.com/gemini-cli-extensions/workspace
 ```
+
+### Other MCP Clients
+
+This server works with Claude Desktop, VS Code Copilot, Cursor, Cline,
+Continue.dev, Windsurf, and any other MCP-compatible agent.
+
+See the **[MCP Clients Setup Guide](docs/mcp-clients.md)** for per-agent
+configuration instructions.
 
 ## Usage
 
@@ -78,6 +91,8 @@ If you want to host your own version of this extension's infrastructure, see the
 
 - [Documentation](docs/index.md): Detailed documentation on all the available
   tools.
+- [MCP Clients Setup](docs/mcp-clients.md): Instructions for Claude Desktop,
+  VS Code Copilot, Cursor, Cline, Continue.dev, and Windsurf.
 - [GitHub Issues](https://github.com/gemini-cli-extensions/workspace/issues):
   Report bugs or request features.
 
@@ -98,7 +113,7 @@ Google Account data, as well as other data shared with you.
 - Untrusted inputs may contain hidden instructions that could hijack your CLI
   session. Attackers can then leverage this to modify, steal, or destroy your
   data.
-- Always carefully review actions taken by Gemini CLI on your behalf to ensure
+- Always carefully review actions taken by your AI agent on your behalf to ensure
   they are correct and align with your intentions.
 
 ## Contributing
