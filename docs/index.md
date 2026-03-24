@@ -1,7 +1,12 @@
 # Google Workspace Extension Documentation
 
-This document provides an overview of the Google Workspace extension for Gemini
-CLI.
+This document provides an overview of the Google Workspace MCP server — a
+[Model Context Protocol](https://modelcontextprotocol.io/) server that exposes
+Google Workspace APIs as tools callable by AI assistants.
+
+The server works with **Gemini CLI** and any other MCP-compatible agent. See
+[Using with Other MCP Clients](mcp-clients.md) for setup instructions for
+Claude Desktop, VS Code Copilot, Cursor, Cline, Continue.dev, and Windsurf.
 
 ## Available Tools
 

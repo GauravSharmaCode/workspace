@@ -6,6 +6,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -1315,7 +1319,75 @@ System labels that can be modified:
     peopleService.getUserRelations,
   );
 
-  // 4. Connect the transport layer and start listening
+  // 4. Register MCP resources exposing behavioral context and per-service skill guides.
+  // Any MCP-compatible agent (Claude Desktop, Cursor, Cline, etc.) can load these
+  // to get the same behavioral guidance that Gemini CLI activates via its skills system.
+  const contextFilePath = join(__dirname, '..', 'WORKSPACE-Context.md');
+  if (existsSync(contextFilePath)) {
+    server.registerResource(
+      'workspace-context',
+      'workspace://context',
+      {
+        title: 'Google Workspace Behavioral Guide',
+        description:
+          'Core behavioral instructions for using the Google Workspace MCP server effectively, including best practices, output formatting, and error handling patterns.',
+        mimeType: 'text/markdown',
+      },
+      async (uri) => ({
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'text/markdown',
+            text: await readFile(contextFilePath, 'utf-8'),
+          },
+        ],
+      }),
+    );
+  }
+
+  // Skills may be in the release layout (dist/../skills) or dev layout (dist/../../skills)
+  const skillsBaseDir = [
+    join(__dirname, '..', 'skills'),
+    join(__dirname, '..', '..', 'skills'),
+  ].find((d) => existsSync(d));
+
+  const skillDefs = [
+    { name: 'gmail', title: 'Gmail Expert Guide' },
+    { name: 'google-docs', title: 'Google Docs Expert Guide' },
+    { name: 'google-calendar', title: 'Google Calendar Expert Guide' },
+    { name: 'google-chat', title: 'Google Chat Expert Guide' },
+    { name: 'google-sheets', title: 'Google Sheets Expert Guide' },
+    { name: 'google-slides', title: 'Google Slides Expert Guide' },
+  ];
+
+  if (skillsBaseDir) {
+    for (const skill of skillDefs) {
+      const skillPath = join(skillsBaseDir, skill.name, 'SKILL.md');
+      if (existsSync(skillPath)) {
+        const capturedPath = skillPath;
+        server.registerResource(
+          `skill-${skill.name}`,
+          `workspace://skills/${skill.name}`,
+          {
+            title: skill.title,
+            description: `Detailed behavioral guide for ${skill.title.replace(' Expert Guide', '')} operations through the MCP server.`,
+            mimeType: 'text/markdown',
+          },
+          async (uri) => ({
+            contents: [
+              {
+                uri: uri.href,
+                mimeType: 'text/markdown',
+                text: await readFile(capturedPath, 'utf-8'),
+              },
+            ],
+          }),
+        );
+      }
+    }
+  }
+
+  // 5. Connect the transport layer and start listening
   const transport = new StdioServerTransport();
   await server.connect(transport);
 

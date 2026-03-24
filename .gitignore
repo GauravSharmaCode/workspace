@@ -26,6 +26,7 @@ coverage/
 *~
 .idea/
 .vscode/
+!.vscode/mcp.json
 
 # Auth tokens
 token.json

@@ -1,0 +1,46 @@
+# Google Workspace MCP Server
+
+This is a Google Workspace Extension providing MCP tools for Docs, Sheets,
+Slides, Gmail, Drive, Calendar, Chat, and People APIs via the Model Context
+Protocol (MCP).
+
+## Build & Test
+
+```bash
+npm install && npm run build   # install and build
+npm test                       # run all tests
+npx jest <path/to/test.ts>     # run a single test
+npm run lint && npm run lint:fix
+```
+
+## Development Conventions
+
+- Entry point: `workspace-server/src/index.ts` (registers all MCP tools)
+- Services: `workspace-server/src/services/` (one file per Google service)
+- Tests: `workspace-server/src/__tests__/services/` (mirrors services/)
+- Every `.ts` file needs the Apache 2.0 license header
+- Node.js imports must use the `node:` prefix (e.g., `node:fs`, `node:path`)
+- Unused vars/params must be prefixed with `_`
+- Service methods are arrow functions on class properties (not regular methods)
+
+## Adding a New Tool
+
+1. Add an arrow-function method to the relevant `services/*.ts` class
+2. Call `server.registerTool('namespace.action', { description, inputSchema }, handler)` in `index.ts`
+3. Use zod for `inputSchema` — see existing tools for patterns
+4. Add a test in `__tests__/services/`
+
+## MCP Resources Available (when server is running)
+
+When the MCP server is configured and running, load these resources for
+behavioral guidance before working with each service:
+
+- `workspace://context` — Core behavioral guide (load at session start)
+- `workspace://skills/gmail` — Gmail composition and search guide
+- `workspace://skills/google-docs` — Docs two-step format workflow
+- `workspace://skills/google-calendar` — Calendar timezone-first workflow
+- `workspace://skills/google-chat` — Chat message formatting guide
+- `workspace://skills/google-sheets` — Sheets query and range guide
+- `workspace://skills/google-slides` — Slides extraction guide
+
+See [AGENT-CONTEXT.md](AGENT-CONTEXT.md) for a full standalone behavioral guide.
