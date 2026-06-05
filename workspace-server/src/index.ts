@@ -19,6 +19,7 @@ import { TimeService } from './services/TimeService';
 import { PeopleService } from './services/PeopleService';
 import { SlidesService, PREDEFINED_LAYOUTS } from './services/SlidesService';
 import { SheetsService } from './services/SheetsService';
+import { TasksService } from './services/TasksService';
 import { GMAIL_SEARCH_MAX_RESULTS } from './utils/constants';
 import { gmailAttachmentSchema } from './utils/validation';
 
@@ -200,6 +201,7 @@ async function main() {
   const timeService = new TimeService();
   const slidesService = new SlidesService(authManager);
   const sheetsService = new SheetsService(authManager);
+  const tasksService = new TasksService(authManager);
 
   // 3. Register tools directly on the server
   // Handle tool name normalization (dots to underscores) by default, or use dots if --use-dot-names is passed.
@@ -1862,6 +1864,141 @@ System labels that can be modified:
       ...readOnlyToolProps,
     },
     peopleService.getUserRelations,
+  );
+
+  // Tasks tools (gated behind the tasks feature groups; default-OFF)
+  registerTool(
+    'tasks.listLists',
+    {
+      description: "Lists the authenticated user's task lists.",
+      inputSchema: {
+        maxResults: z
+          .number()
+          .optional()
+          .describe('Maximum number of task lists to return.'),
+        pageToken: z
+          .string()
+          .optional()
+          .describe('Token for the next page of results.'),
+      },
+      ...readOnlyToolProps,
+    },
+    tasksService.listTaskLists,
+  );
+
+  registerTool(
+    'tasks.list',
+    {
+      description: 'Lists tasks in a specific task list.',
+      inputSchema: {
+        taskListId: z.string().describe('The ID of the task list.'),
+        showCompleted: z
+          .boolean()
+          .optional()
+          .describe('Whether to show completed tasks.'),
+        showDeleted: z
+          .boolean()
+          .optional()
+          .describe('Whether to show deleted tasks.'),
+        showHidden: z
+          .boolean()
+          .optional()
+          .describe('Whether to show hidden tasks.'),
+        showAssigned: z
+          .boolean()
+          .optional()
+          .describe('Whether to show tasks assigned from Docs or Chat.'),
+        maxResults: z
+          .number()
+          .optional()
+          .describe('Maximum number of tasks to return.'),
+        pageToken: z
+          .string()
+          .optional()
+          .describe('Token for the next page of results.'),
+        dueMin: z
+          .string()
+          .optional()
+          .describe(
+            'Lower bound for a task\'s due date (as a RFC 3339 timestamp, e.g., "2024-01-15T12:00:00Z").',
+          ),
+        dueMax: z
+          .string()
+          .optional()
+          .describe(
+            'Upper bound for a task\'s due date (as a RFC 3339 timestamp, e.g., "2024-01-15T12:00:00Z").',
+          ),
+      },
+      ...readOnlyToolProps,
+    },
+    tasksService.listTasks,
+  );
+
+  registerTool(
+    'tasks.create',
+    {
+      description: 'Creates a new task in the specified task list.',
+      inputSchema: {
+        taskListId: z.string().describe('The ID of the task list.'),
+        title: z.string().describe('The title of the task.'),
+        notes: z.string().optional().describe('Notes for the task.'),
+        due: z
+          .string()
+          .optional()
+          .describe(
+            'The due date for the task (as a RFC 3339 timestamp, e.g., "2024-01-15T12:00:00Z").',
+          ),
+      },
+    },
+    tasksService.createTask,
+  );
+
+  registerTool(
+    'tasks.update',
+    {
+      description: 'Updates an existing task.',
+      inputSchema: {
+        taskListId: z.string().describe('The ID of the task list.'),
+        taskId: z.string().describe('The ID of the task to update.'),
+        title: z.string().optional().describe('The new title of the task.'),
+        notes: z.string().optional().describe('The new notes for the task.'),
+        status: z
+          .enum(['needsAction', 'completed'])
+          .optional()
+          .describe('The new status of the task.'),
+        due: z
+          .string()
+          .optional()
+          .describe(
+            'The new due date for the task (as a RFC 3339 timestamp, e.g., "2024-01-15T12:00:00Z").',
+          ),
+      },
+    },
+    tasksService.updateTask,
+  );
+
+  registerTool(
+    'tasks.complete',
+    {
+      description: 'Completes a task (convenience wrapper around update).',
+      inputSchema: {
+        taskListId: z.string().describe('The ID of the task list.'),
+        taskId: z.string().describe('The ID of the task to complete.'),
+      },
+    },
+    tasksService.completeTask,
+  );
+
+  registerTool(
+    'tasks.delete',
+    {
+      description: 'Deletes a task.',
+      inputSchema: {
+        taskListId: z.string().describe('The ID of the task list.'),
+        taskId: z.string().describe('The ID of the task to delete.'),
+      },
+    },
+    tasksService.deleteTask,
   );
 
   // 4. Connect the transport layer and start listening
