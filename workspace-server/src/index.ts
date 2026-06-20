@@ -6,8 +6,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -2024,7 +2023,7 @@ System labels that can be modified:
           {
             uri: uri.href,
             mimeType: 'text/markdown',
-            text: await readFile(contextFilePath, 'utf-8'),
+            text: readFileSync(contextFilePath, 'utf-8'),
           },
         ],
       }),
@@ -2064,7 +2063,7 @@ System labels that can be modified:
               {
                 uri: uri.href,
                 mimeType: 'text/markdown',
-                text: await readFile(capturedPath, 'utf-8'),
+                text: readFileSync(capturedPath, 'utf-8'),
               },
             ],
           }),
