@@ -11,6 +11,12 @@ import { extractDocId } from '../utils/IdUtils';
 import { gaxiosOptions } from '../utils/GaxiosConfig';
 import { extractDocumentId as validateAndExtractDocId } from '../utils/validation';
 
+// Field mask for documents.get when reading tab content. Selects only the
+// structural fields we use; broader masks like 'tabs' alone trigger
+// "comment-specific fields" errors when combined with includeTabsContent.
+export const TABS_FIELD_MASK =
+  'tabs(tabProperties,documentTab(body,headers,footers,footnotes))';
+
 interface BaseDocsSuggestion {
   text: string;
   startIndex?: number;
@@ -75,7 +81,7 @@ export class DocsService {
       const res = await docs.documents.get({
         documentId: id,
         suggestionsViewMode: 'SUGGESTIONS_INLINE',
-        fields: 'body',
+        fields: 'title,body',
       });
 
       const suggestions: DocsSuggestion[] = this._extractSuggestions(
@@ -90,7 +96,11 @@ export class DocsService {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(suggestions, null, 2),
+            text: JSON.stringify(
+              { title: res.data.title, suggestions },
+              null,
+              2,
+            ),
           },
         ],
       };
@@ -303,7 +313,7 @@ export class DocsService {
           // Discover the end index by reading the document (required for tabs)
           const res = await docs.documents.get({
             documentId: id,
-            fields: 'tabs',
+            fields: TABS_FIELD_MASK,
             includeTabsContent: true,
           });
 
@@ -539,10 +549,12 @@ export class DocsService {
       const docs = await this.getDocsClient();
       const res = await docs.documents.get({
         documentId: id,
-        fields: 'tabs', // Request tabs only (body is legacy and mutually exclusive with tabs in mask)
+        fields: `title,${TABS_FIELD_MASK}`,
         includeTabsContent: true,
+        suggestionsViewMode: 'PREVIEW_WITHOUT_SUGGESTIONS',
       });
 
+      const docTitle = res.data.title;
       const tabs = this._flattenTabs(res.data.tabs || []);
 
       // If tabId is provided, try to find it
@@ -565,6 +577,9 @@ export class DocsService {
         }
 
         let text = '';
+        if (docTitle) {
+          text += `Document Title: ${docTitle}\n\n`;
+        }
         content.forEach((element) => {
           text += this._readStructuralElement(element);
         });
@@ -595,6 +610,9 @@ export class DocsService {
       if (tabs.length === 1) {
         const tab = tabs[0];
         let text = '';
+        if (docTitle) {
+          text += `Document Title: ${docTitle}\n\n`;
+        }
         if (tab.documentTab?.body?.content) {
           tab.documentTab.body.content.forEach((element) => {
             text += this._readStructuralElement(element);
@@ -630,7 +648,7 @@ export class DocsService {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(tabsData, null, 2),
+            text: JSON.stringify({ title: docTitle, tabs: tabsData }, null, 2),
           },
         ],
       };
@@ -725,7 +743,7 @@ export class DocsService {
       // Get the document to find where the text will be replaced
       const docBefore = await docs.documents.get({
         documentId: id,
-        fields: 'tabs',
+        fields: TABS_FIELD_MASK,
         includeTabsContent: true,
       });
 

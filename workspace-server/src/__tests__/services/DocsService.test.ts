@@ -12,7 +12,7 @@ import {
   beforeEach,
   afterEach,
 } from '@jest/globals';
-import { DocsService } from '../../services/DocsService';
+import { DocsService, TABS_FIELD_MASK } from '../../services/DocsService';
 import { AuthManager } from '../../auth/AuthManager';
 import { google } from 'googleapis';
 
@@ -465,6 +465,12 @@ describe('DocsService', () => {
 
       const result = await docsService.getText({ documentId: 'test-doc-id' });
 
+      expect(mockDocsAPI.documents.get).toHaveBeenCalledWith({
+        documentId: 'test-doc-id',
+        fields: `title,${TABS_FIELD_MASK}`,
+        includeTabsContent: true,
+        suggestionsViewMode: 'PREVIEW_WITHOUT_SUGGESTIONS',
+      });
       expect(result.content[0].text).toBe('Hello World\n');
     });
 
@@ -513,6 +519,7 @@ describe('DocsService', () => {
     it('should return all tabs if no tabId provided and tabs exist', async () => {
       const mockDoc = {
         data: {
+          title: 'Multi-Tab Document',
           tabs: [
             {
               tabProperties: { tabId: 'tab-1', title: 'Tab 1' },
@@ -550,14 +557,15 @@ describe('DocsService', () => {
       const result = await docsService.getText({ documentId: 'test-doc-id' });
       const parsed = JSON.parse(result.content[0].text);
 
-      expect(parsed).toHaveLength(2);
-      expect(parsed[0]).toEqual({
+      expect(parsed.title).toBe('Multi-Tab Document');
+      expect(parsed.tabs).toHaveLength(2);
+      expect(parsed.tabs[0]).toEqual({
         tabId: 'tab-1',
         title: 'Tab 1',
         content: 'Tab 1 Content',
         index: 0,
       });
-      expect(parsed[1]).toEqual({
+      expect(parsed.tabs[1]).toEqual({
         tabId: 'tab-2',
         title: 'Tab 2',
         content: 'Tab 2 Content',
@@ -695,6 +703,7 @@ describe('DocsService', () => {
     it('should include text from nested child tabs', async () => {
       const mockDoc = {
         data: {
+          title: 'Nested Tabs Doc',
           tabs: [
             {
               tabProperties: { tabId: 'parent-tab', title: 'Parent' },
@@ -736,14 +745,15 @@ describe('DocsService', () => {
       const result = await docsService.getText({ documentId: 'test-doc-id' });
       const parsed = JSON.parse(result.content[0].text);
 
-      expect(parsed).toHaveLength(2);
-      expect(parsed[0]).toEqual({
+      expect(parsed.title).toBe('Nested Tabs Doc');
+      expect(parsed.tabs).toHaveLength(2);
+      expect(parsed.tabs[0]).toEqual({
         tabId: 'parent-tab',
         title: 'Parent',
         content: 'Parent Content',
         index: 0,
       });
-      expect(parsed[1]).toEqual({
+      expect(parsed.tabs[1]).toEqual({
         tabId: 'child-tab',
         title: 'Child',
         content: 'Child Content',
@@ -841,7 +851,7 @@ describe('DocsService', () => {
 
       expect(mockDocsAPI.documents.get).toHaveBeenCalledWith({
         documentId: 'test-doc-id',
-        fields: 'tabs',
+        fields: TABS_FIELD_MASK,
         includeTabsContent: true,
       });
 
@@ -918,7 +928,7 @@ describe('DocsService', () => {
 
       expect(mockDocsAPI.documents.get).toHaveBeenCalledWith({
         documentId: 'test-doc-id',
-        fields: 'tabs',
+        fields: TABS_FIELD_MASK,
         includeTabsContent: true,
       });
 

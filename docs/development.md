@@ -156,6 +156,8 @@ used to maintain dot notation and avoid breaking existing configurations.
     - `__tests__/`: Contains all the tests.
     - `auth/`: Handles authentication.
     - `cli/`: CLI tools (e.g., headless OAuth login).
+    - `features/`: Feature configuration registry and resolver. See the
+      [Feature Configuration](feature-configuration.md) docs.
     - `services/`: Contains the business logic for each service.
     - `utils/`: Contains utility functions.
   - `config/`: Contains configuration files.
@@ -172,7 +174,7 @@ authentication credentials.
 To use the script, run the following command:
 
 ```bash
-node scripts/auth-utils.js <command>
+npm run auth-utils -- <command>
 ```
 
 ### Commands
@@ -191,7 +193,7 @@ Cloud Shell, VMs), authentication requires manual steps:
 
 1. Run the login tool:
    ```bash
-   node scripts/auth-utils.js login
+   npm run auth-utils -- login
    ```
    Or, from the `workspace-server` directory:
    ```bash

@@ -21,15 +21,36 @@ import { ChatService } from './services/ChatService';
 import { GmailService } from './services/GmailService';
 import { TimeService } from './services/TimeService';
 import { PeopleService } from './services/PeopleService';
-import { SlidesService } from './services/SlidesService';
+import { SlidesService, PREDEFINED_LAYOUTS } from './services/SlidesService';
 import { SheetsService } from './services/SheetsService';
+import { TasksService } from './services/TasksService';
 import { GMAIL_SEARCH_MAX_RESULTS } from './utils/constants';
+import { gmailAttachmentSchema } from './utils/validation';
 
-import { setLoggingEnabled } from './utils/logger';
+import { setLoggingEnabled, logToFile } from './utils/logger';
 import { applyToolNameNormalization } from './utils/tool-normalization';
 import { SCOPES } from './auth/scopes';
+import { resolveFeatures } from './features/index';
 
 // Shared schemas for calendar event tools
+const eventDateInputSchema = (fieldName: string) =>
+  z
+    .object({
+      dateTime: z
+        .string()
+        .optional()
+        .describe(
+          'Time in strict ISO 8601 format with seconds and timezone (e.g., 2024-01-15T10:30:00Z or 2024-01-15T10:30:00-05:00).',
+        ),
+      date: z
+        .string()
+        .optional()
+        .describe('Date in YYYY-MM-DD format. Use for all-day events.'),
+    })
+    .refine(({ dateTime, date }) => Number(!!dateTime) + Number(!!date) === 1, {
+      message: `${fieldName} must have exactly one of "dateTime" (for timed events) or "date" (for all-day events)`,
+    });
+
 const eventMeetAndAttachmentsSchema = {
   addGoogleMeet: z
     .boolean()
@@ -58,9 +79,45 @@ const eventMeetAndAttachmentsSchema = {
     )
     .optional()
     .describe(
-      'Google Drive file attachments. IMPORTANT: Providing attachments fully REPLACES any existing attachments on the event (not appended).',
+      'Google Drive file attachments. IMPORTANT: Providing attachments fully REPLACES any existing attachments on the event (not appended). On updates, pass an empty array to clear all attachments.',
     ),
 };
+
+// Shared schema for Google Slides text-range parameters.
+// A discriminated union on `type` makes the missing-index case unrepresentable:
+// FIXED_RANGE requires both startIndex and endIndex, FROM_START_INDEX requires
+// startIndex, and ALL has no positional fields. Callers cannot construct
+// e.g. { type: 'FIXED_RANGE' } without indices.
+const slidesTextRangeSchema = z
+  .discriminatedUnion('type', [
+    z
+      .object({ type: z.literal('ALL') })
+      .describe('Operate on the entire text content of the object.'),
+    z
+      .object({
+        type: z.literal('FIXED_RANGE'),
+        startIndex: z
+          .number()
+          .describe('Inclusive 0-based start index of the range.'),
+        endIndex: z
+          .number()
+          .describe('Exclusive 0-based end index of the range.'),
+      })
+      .describe('Operate on a specific [startIndex, endIndex) range.'),
+    z
+      .object({
+        type: z.literal('FROM_START_INDEX'),
+        startIndex: z
+          .number()
+          .describe(
+            'Inclusive 0-based start index; the range extends to the end of the text.',
+          ),
+      })
+      .describe('Operate from startIndex to the end of the text.'),
+  ])
+  .describe(
+    'Text range to operate on. One of: { type: "ALL" }, { type: "FIXED_RANGE", startIndex, endIndex }, or { type: "FROM_START_INDEX", startIndex }.',
+  );
 
 // Shared schemas for Gmail tools
 const emailComposeSchema = {
@@ -77,6 +134,10 @@ const emailComposeSchema = {
     .union([z.string(), z.array(z.string())])
     .optional()
     .describe('BCC recipient email address(es).'),
+  replyTo: z
+    .string()
+    .optional()
+    .describe('The email address to which replies should be sent.'),
   isHtml: z
     .boolean()
     .optional()
@@ -103,6 +164,18 @@ async function main() {
       readOnlyHint: true,
     },
   };
+
+  // Resolve enabled features from defaults + env overrides
+  const { enabledTools } = resolveFeatures(
+    undefined,
+    process.env['WORKSPACE_FEATURE_OVERRIDES'],
+  );
+
+  logToFile(
+    `[features] ${enabledTools.size} tools enabled. Disabled: ${
+      process.env['WORKSPACE_FEATURE_OVERRIDES'] || '(none)'
+    }`,
+  );
 
   const authManager = new AuthManager(SCOPES);
 
@@ -132,6 +205,7 @@ async function main() {
   const timeService = new TimeService();
   const slidesService = new SlidesService(authManager);
   const sheetsService = new SheetsService(authManager);
+  const tasksService = new TasksService(authManager);
 
   // 3. Register tools directly on the server
   // Handle tool name normalization (dots to underscores) by default, or use dots if --use-dot-names is passed.
@@ -139,7 +213,22 @@ async function main() {
   const separator = useDotNames ? '.' : '_';
   applyToolNameNormalization(server, useDotNames);
 
-  server.registerTool(
+  // Wrap registerTool to skip tools disabled by feature config.
+  // Auth tools are always registered (not gated by features).
+  const originalRegisterTool = server.registerTool.bind(server);
+  const registerTool: typeof server.registerTool = ((
+    name: string,
+    config: unknown,
+    handler: unknown,
+  ) => {
+    if (!enabledTools.has(name) && !name.startsWith('auth.')) {
+      logToFile(`[features] Skipping disabled tool: ${name}`);
+      return server;
+    }
+    return originalRegisterTool(name, config as never, handler as never);
+  }) as typeof server.registerTool;
+
+  registerTool(
     'auth.clear',
     {
       description:
@@ -159,7 +248,7 @@ async function main() {
     },
   );
 
-  server.registerTool(
+  registerTool(
     'auth.refreshToken',
     {
       description: 'Manually triggers the token refresh process.',
@@ -178,7 +267,7 @@ async function main() {
     },
   );
 
-  server.registerTool(
+  registerTool(
     'docs.getSuggestions',
     {
       description: 'Retrieves suggested edits from a Google Doc.',
@@ -191,7 +280,7 @@ async function main() {
     docsService.getSuggestions,
   );
 
-  server.registerTool(
+  registerTool(
     'drive.getComments',
     {
       description:
@@ -205,7 +294,7 @@ async function main() {
     driveService.getComments,
   );
 
-  server.registerTool(
+  registerTool(
     'docs.create',
     {
       description:
@@ -221,7 +310,7 @@ async function main() {
     docsService.create,
   );
 
-  server.registerTool(
+  registerTool(
     'docs.writeText',
     {
       description: 'Writes text to a Google Doc at a specified position.',
@@ -245,7 +334,7 @@ async function main() {
     docsService.writeText,
   );
 
-  server.registerTool(
+  registerTool(
     'drive.findFolder',
     {
       description: 'Finds a folder by name in Google Drive.',
@@ -257,7 +346,7 @@ async function main() {
     driveService.findFolder,
   );
 
-  server.registerTool(
+  registerTool(
     'drive.createFolder',
     {
       description: 'Creates a new folder in Google Drive.',
@@ -276,7 +365,7 @@ async function main() {
     driveService.createFolder,
   );
 
-  server.registerTool(
+  registerTool(
     'docs.getText',
     {
       description: 'Retrieves the text content of a Google Doc.',
@@ -294,7 +383,7 @@ async function main() {
     docsService.getText,
   );
 
-  server.registerTool(
+  registerTool(
     'docs.replaceText',
     {
       description:
@@ -316,7 +405,7 @@ async function main() {
     docsService.replaceText,
   );
 
-  server.registerTool(
+  registerTool(
     'docs.formatText',
     {
       description:
@@ -360,7 +449,7 @@ async function main() {
   );
 
   // Slides tools
-  server.registerTool(
+  registerTool(
     'slides.getText',
     {
       description:
@@ -375,7 +464,7 @@ async function main() {
     slidesService.getText,
   );
 
-  server.registerTool(
+  registerTool(
     'slides.getMetadata',
     {
       description: 'Gets metadata about a Google Slides presentation.',
@@ -389,7 +478,7 @@ async function main() {
     slidesService.getMetadata,
   );
 
-  server.registerTool(
+  registerTool(
     'slides.getImages',
     {
       description:
@@ -410,7 +499,7 @@ async function main() {
     slidesService.getImages,
   );
 
-  server.registerTool(
+  registerTool(
     'slides.getSlideThumbnail',
     {
       description:
@@ -434,8 +523,382 @@ async function main() {
     slidesService.getSlideThumbnail,
   );
 
+  registerTool(
+    'slides.create',
+    {
+      description:
+        'Creates a new Google Slides presentation. Returns the presentation ID and URL.',
+      inputSchema: {
+        title: z.string().describe('The title for the new presentation.'),
+      },
+    },
+    slidesService.create,
+  );
+
+  registerTool(
+    'slides.addSlide',
+    {
+      description:
+        'Adds a new slide to a Google Slides presentation. Optionally specify position and layout. Returns the new slideObjectId, which can be used to chain follow-up calls such as slides.addShape or slides.insertText.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        insertionIndex: z
+          .number()
+          .optional()
+          .describe(
+            'The 0-based index where the slide should be inserted. If not specified, the slide is added at the end.',
+          ),
+        layoutId: z
+          .string()
+          .optional()
+          .describe(
+            'The ID of a specific layout to use. Use slides.getMetadata to find available layouts.',
+          ),
+        predefinedLayout: z
+          .enum(PREDEFINED_LAYOUTS)
+          .optional()
+          .describe('A predefined layout type for the new slide.'),
+        objectId: z
+          .string()
+          .optional()
+          .describe(
+            'A user-supplied object ID for the new slide. If not specified, a unique ID is generated.',
+          ),
+      },
+    },
+    slidesService.addSlide,
+  );
+
+  registerTool(
+    'slides.deleteSlide',
+    {
+      description: 'Deletes a slide from a Google Slides presentation.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        slideObjectId: z
+          .string()
+          .describe(
+            'The object ID of the slide to delete (can be found via slides.getMetadata).',
+          ),
+      },
+    },
+    slidesService.deleteSlide,
+  );
+
+  registerTool(
+    'slides.duplicateSlide',
+    {
+      description:
+        'Duplicates (clones) a slide in a Google Slides presentation. The duplicate is placed immediately after the original.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        slideObjectId: z
+          .string()
+          .describe(
+            'The object ID of the slide to duplicate (can be found via slides.getMetadata).',
+          ),
+      },
+    },
+    slidesService.duplicateSlide,
+  );
+
+  registerTool(
+    'slides.reorderSlides',
+    {
+      description:
+        'Moves one or more slides to a new position in a Google Slides presentation.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        slideObjectIds: z
+          .array(z.string())
+          .describe('The object IDs of the slides to move.'),
+        insertionIndex: z
+          .number()
+          .describe('The 0-based index where the slides should be moved to.'),
+      },
+    },
+    slidesService.reorderSlides,
+  );
+
+  registerTool(
+    'slides.getSpeakerNotes',
+    {
+      description:
+        'Retrieves the speaker notes for all slides in a Google Slides presentation.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+      },
+      ...readOnlyToolProps,
+    },
+    slidesService.getSpeakerNotes,
+  );
+
+  registerTool(
+    'slides.updateSpeakerNotes',
+    {
+      description:
+        'Updates (replaces) the speaker notes for a specific slide in a Google Slides presentation.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        slideObjectId: z
+          .string()
+          .describe(
+            'The object ID of the slide whose speaker notes to update.',
+          ),
+        notes: z
+          .string()
+          .describe(
+            'The new speaker notes text. Pass an empty string to clear the notes.',
+          ),
+      },
+    },
+    slidesService.updateSpeakerNotes,
+  );
+
+  registerTool(
+    'slides.replaceAllText',
+    {
+      description:
+        'Replaces all occurrences of a given text with new text across the entire Google Slides presentation. Useful for template variable replacement. Note: matchCase defaults to true here, which is the opposite of the underlying Google Slides API default — pass matchCase: false explicitly for case-insensitive search.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        findText: z.string().describe('The text to find in the presentation.'),
+        replaceText: z
+          .string()
+          .describe('The text to replace the found text with.'),
+        matchCase: z
+          .boolean()
+          .optional()
+          .describe(
+            'Whether the search should be case-sensitive (default: true; note this differs from the Google API default of false).',
+          ),
+      },
+    },
+    slidesService.replaceAllText,
+  );
+
+  registerTool(
+    'slides.insertText',
+    {
+      description:
+        'Inserts text into a shape or table cell in a Google Slides presentation.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        objectId: z
+          .string()
+          .describe(
+            'The object ID of the shape or table cell to insert text into.',
+          ),
+        text: z.string().describe('The text to insert.'),
+        insertionIndex: z
+          .number()
+          .optional()
+          .describe(
+            'The 0-based index where the text should be inserted (default: 0, the beginning).',
+          ),
+      },
+    },
+    slidesService.insertText,
+  );
+
+  registerTool(
+    'slides.deleteText',
+    {
+      description:
+        'Deletes text from a shape or table cell in a Google Slides presentation.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        objectId: z
+          .string()
+          .describe(
+            'The object ID of the shape or table cell to delete text from.',
+          ),
+        range: slidesTextRangeSchema.optional().default({ type: 'ALL' }),
+      },
+    },
+    slidesService.deleteText,
+  );
+
+  registerTool(
+    'slides.addShape',
+    {
+      description:
+        'Adds a shape (e.g., text box, rectangle, ellipse) to a slide in a Google Slides presentation. Coordinates and dimensions are in points (PT).',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        slideObjectId: z
+          .string()
+          .describe('The object ID of the slide to add the shape to.'),
+        shapeType: z
+          .string()
+          .describe(
+            'The type of shape (e.g., "TEXT_BOX", "RECTANGLE", "ELLIPSE", "ROUND_RECTANGLE", "TRIANGLE", "ARROW_NORTH", "ARROW_EAST", "STAR_5", "CLOUD", "HEART").',
+          ),
+        x: z
+          .number()
+          .describe('The X coordinate of the shape position in points.'),
+        y: z
+          .number()
+          .describe('The Y coordinate of the shape position in points.'),
+        width: z.number().describe('The width of the shape in points.'),
+        height: z.number().describe('The height of the shape in points.'),
+        objectId: z
+          .string()
+          .optional()
+          .describe(
+            'A user-supplied object ID for the new shape. If not specified, a unique ID is generated.',
+          ),
+      },
+    },
+    slidesService.addShape,
+  );
+
+  registerTool(
+    'slides.addImage',
+    {
+      description:
+        'Adds an image from a URL to a slide in a Google Slides presentation. Coordinates and dimensions are in points (PT).',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        slideObjectId: z
+          .string()
+          .describe('The object ID of the slide to add the image to.'),
+        imageUrl: z
+          .string()
+          .describe(
+            'The URL of the image to insert. Must be publicly accessible over HTTPS. Google requires PNG, JPEG, or GIF format, at most 50MB in size, and at most 25 megapixels.',
+          ),
+        x: z
+          .number()
+          .describe('The X coordinate of the image position in points.'),
+        y: z
+          .number()
+          .describe('The Y coordinate of the image position in points.'),
+        width: z.number().describe('The width of the image in points.'),
+        height: z.number().describe('The height of the image in points.'),
+        objectId: z
+          .string()
+          .optional()
+          .describe(
+            'A user-supplied object ID for the new image. If not specified, a unique ID is generated.',
+          ),
+      },
+    },
+    slidesService.addImage,
+  );
+
+  registerTool(
+    'slides.addTable',
+    {
+      description:
+        'Adds a table to a slide in a Google Slides presentation. Coordinates and dimensions are in points (PT).',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        slideObjectId: z
+          .string()
+          .describe('The object ID of the slide to add the table to.'),
+        rows: z.number().describe('The number of rows in the table.'),
+        columns: z.number().describe('The number of columns in the table.'),
+        x: z
+          .number()
+          .describe('The X coordinate of the table position in points.'),
+        y: z
+          .number()
+          .describe('The Y coordinate of the table position in points.'),
+        width: z.number().describe('The width of the table in points.'),
+        height: z.number().describe('The height of the table in points.'),
+        objectId: z
+          .string()
+          .optional()
+          .describe(
+            'A user-supplied object ID for the new table. If not specified, a unique ID is generated.',
+          ),
+      },
+    },
+    slidesService.addTable,
+  );
+
+  registerTool(
+    'slides.updateTextStyle',
+    {
+      description:
+        'Updates the text style (bold, italic, font size, color, etc.) of text in a shape or table cell in a Google Slides presentation.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        objectId: z
+          .string()
+          .describe(
+            'The object ID of the shape or table cell containing the text.',
+          ),
+        style: z
+          .string()
+          .describe(
+            'A JSON string conforming to the Google Slides TextStyle schema (https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/request#TextStyle). Example: \'{"bold": true, "fontSize": {"magnitude": 18, "unit": "PT"}}\'.',
+          ),
+        fields: z
+          .string()
+          .describe(
+            'A comma-separated field mask listing which TextStyle fields to update. Valid values include: bold, italic, underline, strikethrough, smallCaps, backgroundColor, foregroundColor, fontFamily, fontSize, baselineOffset, weightedFontFamily, link. Use "*" to update every field present in `style`. Any field listed here but absent from `style` is reset to its default.',
+          ),
+        range: slidesTextRangeSchema.optional().default({ type: 'ALL' }),
+      },
+    },
+    slidesService.updateTextStyle,
+  );
+
+  registerTool(
+    'slides.updateShapeProperties',
+    {
+      description:
+        'Updates the properties of a shape (background fill, outline, shadow, etc.) in a Google Slides presentation.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation.'),
+        objectId: z.string().describe('The object ID of the shape to update.'),
+        shapeProperties: z
+          .string()
+          .describe(
+            'A JSON string conforming to the Google Slides ShapeProperties schema (https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations.pages/shape#ShapeProperties). Example: \'{"shapeBackgroundFill": {"solidFill": {"color": {"rgbColor": {"red": 1, "green": 0, "blue": 0}}}}}\'.',
+          ),
+        fields: z
+          .string()
+          .describe(
+            'A comma-separated field mask listing which ShapeProperties fields to update. Valid values include: shapeBackgroundFill, outline, shadow, link, contentAlignment, autofit. Use "*" to update every field present in `shapeProperties`. Any field listed here but absent from `shapeProperties` is reset to its default.',
+          ),
+      },
+    },
+    slidesService.updateShapeProperties,
+  );
+
   // Sheets tools
-  server.registerTool(
+  registerTool(
     'sheets.getText',
     {
       description: 'Retrieves the content of a Google Sheets spreadsheet.',
@@ -453,7 +916,7 @@ async function main() {
     sheetsService.getText,
   );
 
-  server.registerTool(
+  registerTool(
     'sheets.getRange',
     {
       description:
@@ -469,7 +932,7 @@ async function main() {
     sheetsService.getRange,
   );
 
-  server.registerTool(
+  registerTool(
     'sheets.getMetadata',
     {
       description: 'Gets metadata about a Google Sheets spreadsheet.',
@@ -481,7 +944,7 @@ async function main() {
     sheetsService.getMetadata,
   );
 
-  server.registerTool(
+  registerTool(
     'drive.search',
     {
       description:
@@ -519,7 +982,7 @@ async function main() {
     driveService.search,
   );
 
-  server.registerTool(
+  registerTool(
     'drive.downloadFile',
     {
       description:
@@ -536,7 +999,7 @@ async function main() {
     driveService.downloadFile,
   );
 
-  server.registerTool(
+  registerTool(
     'drive.moveFile',
     {
       description:
@@ -560,7 +1023,7 @@ async function main() {
     driveService.moveFile,
   );
 
-  server.registerTool(
+  registerTool(
     'drive.trashFile',
     {
       description:
@@ -572,7 +1035,7 @@ async function main() {
     driveService.trashFile,
   );
 
-  server.registerTool(
+  registerTool(
     'drive.renameFile',
     {
       description: 'Renames a file or folder in Google Drive.',
@@ -588,7 +1051,7 @@ async function main() {
     driveService.renameFile,
   );
 
-  server.registerTool(
+  registerTool(
     'calendar.list',
     {
       description: "Lists all of the user's calendars.",
@@ -598,34 +1061,30 @@ async function main() {
     calendarService.listCalendars,
   );
 
-  server.registerTool(
+  registerTool(
     'calendar.createEvent',
     {
       description:
-        "Creates a new event in a calendar. Supports optional Google Meet link generation and Google Drive file attachments. When addGoogleMeet is true, the Meet URL will be in the response's hangoutLink field. Attachments fully replace any existing attachments.",
+        "Creates a new event in a calendar. Supports regular events, focus time, out-of-office, and working location event types. Use 'date' for all-day events or 'dateTime' for timed events. Supports optional Google Meet link generation and Google Drive file attachments. When addGoogleMeet is true, the Meet URL will be in the response's hangoutLink field. Attachments fully replace any existing attachments.",
       inputSchema: {
         calendarId: z
           .string()
-          .describe('The ID of the calendar to create the event in.'),
-        summary: z.string().describe('The summary or title of the event.'),
+          .optional()
+          .describe(
+            'The ID of the calendar to create the event in. Defaults to the primary calendar.',
+          ),
+        summary: z
+          .string()
+          .optional()
+          .describe(
+            'The summary or title of the event. Defaults based on eventType: "Focus Time", "Out of Office", "Working Location".',
+          ),
         description: z
           .string()
           .optional()
           .describe('The description of the event.'),
-        start: z.object({
-          dateTime: z
-            .string()
-            .describe(
-              'The start time in strict ISO 8601 format with seconds and timezone (e.g., 2024-01-15T10:30:00Z or 2024-01-15T10:30:00-05:00).',
-            ),
-        }),
-        end: z.object({
-          dateTime: z
-            .string()
-            .describe(
-              'The end time in strict ISO 8601 format with seconds and timezone (e.g., 2024-01-15T11:30:00Z or 2024-01-15T11:30:00-05:00).',
-            ),
-        }),
+        start: eventDateInputSchema('start'),
+        end: eventDateInputSchema('end'),
         attendees: z
           .array(z.string())
           .optional()
@@ -637,12 +1096,99 @@ async function main() {
             'Whether to send notifications to attendees. Defaults to "all" if attendees are provided, otherwise "none".',
           ),
         ...eventMeetAndAttachmentsSchema,
+        eventType: z
+          .enum(['default', 'focusTime', 'outOfOffice', 'workingLocation'])
+          .optional()
+          .describe(
+            'The type of event to create. Defaults to "default" (regular event).',
+          ),
+        focusTimeProperties: z
+          .object({
+            chatStatus: z
+              .enum(['available', 'doNotDisturb'])
+              .optional()
+              .describe(
+                'Chat status during focus time. Defaults to "doNotDisturb".',
+              ),
+            autoDeclineMode: z
+              .enum([
+                'declineNone',
+                'declineAllConflictingInvitations',
+                'declineOnlyNewConflictingInvitations',
+              ])
+              .optional()
+              .describe(
+                'How to handle conflicting meeting invitations. Defaults to "declineOnlyNewConflictingInvitations".',
+              ),
+            declineMessage: z
+              .string()
+              .optional()
+              .describe('Message to send when auto-declining meetings.'),
+          })
+          .optional()
+          .describe(
+            'Focus time properties. Only used when eventType is "focusTime".',
+          ),
+        outOfOfficeProperties: z
+          .object({
+            autoDeclineMode: z
+              .enum([
+                'declineNone',
+                'declineAllConflictingInvitations',
+                'declineOnlyNewConflictingInvitations',
+              ])
+              .optional()
+              .describe(
+                'How to handle conflicting meeting invitations. Defaults to "declineOnlyNewConflictingInvitations".',
+              ),
+            declineMessage: z
+              .string()
+              .optional()
+              .describe('Message to send when auto-declining meetings.'),
+          })
+          .optional()
+          .describe(
+            'Out-of-office properties. Only used when eventType is "outOfOffice".',
+          ),
+        workingLocationProperties: z
+          .object({
+            type: z
+              .enum(['homeOffice', 'officeLocation', 'customLocation'])
+              .describe('The type of working location.'),
+            officeLocation: z
+              .object({
+                buildingId: z
+                  .string()
+                  .optional()
+                  .describe('The building ID from the directory.'),
+                label: z
+                  .string()
+                  .optional()
+                  .describe('Label for the office location.'),
+              })
+              .optional()
+              .describe(
+                'Office location details. Required when type is "officeLocation".',
+              ),
+            customLocation: z
+              .object({
+                label: z.string().describe('Label for the custom location.'),
+              })
+              .optional()
+              .describe(
+                'Custom location details. Required when type is "customLocation".',
+              ),
+          })
+          .optional()
+          .describe(
+            'Working location properties. Only used when eventType is "workingLocation".',
+          ),
       },
     },
     calendarService.createEvent,
   );
 
-  server.registerTool(
+  registerTool(
     'calendar.listEvents',
     {
       description: 'Lists events from a calendar. Defaults to upcoming events.',
@@ -664,13 +1210,28 @@ async function main() {
           .array(z.string())
           .optional()
           .describe('The response status of the attendee.'),
+        eventTypes: z
+          .array(
+            z.enum([
+              'default',
+              'focusTime',
+              'outOfOffice',
+              'workingLocation',
+              'birthday',
+              'fromGmail',
+            ]),
+          )
+          .optional()
+          .describe(
+            'Filter by event types. Possible values: default, focusTime, outOfOffice, workingLocation, birthday, fromGmail.',
+          ),
       },
       ...readOnlyToolProps,
     },
     calendarService.listEvents,
   );
 
-  server.registerTool(
+  registerTool(
     'calendar.getEvent',
     {
       description: 'Gets the details of a specific calendar event.',
@@ -688,7 +1249,7 @@ async function main() {
     calendarService.getEvent,
   );
 
-  server.registerTool(
+  registerTool(
     'calendar.findFreeTime',
     {
       description: 'Finds a free time slot for multiple people to meet.',
@@ -715,11 +1276,11 @@ async function main() {
     calendarService.findFreeTime,
   );
 
-  server.registerTool(
+  registerTool(
     'calendar.updateEvent',
     {
       description:
-        "Updates an existing event in a calendar. Supports adding Google Meet links and Google Drive file attachments. When addGoogleMeet is true, the Meet URL will be in the response's hangoutLink field. Attachments fully replace any existing attachments (not appended).",
+        "Updates an existing event in a calendar while preserving unspecified fields. Supports both timed events (`dateTime`) and all-day events (`date`), along with Google Meet links and Google Drive file attachments. When addGoogleMeet is true, the Meet URL will be in the response's hangoutLink field. Attachments fully replace any existing attachments (not appended), and an empty attachments array clears them.",
       inputSchema: {
         eventId: z.string().describe('The ID of the event to update.'),
         calendarId: z
@@ -734,24 +1295,8 @@ async function main() {
           .string()
           .optional()
           .describe('The new description of the event.'),
-        start: z
-          .object({
-            dateTime: z
-              .string()
-              .describe(
-                'The new start time in strict ISO 8601 format with seconds and timezone (e.g., 2024-01-15T10:30:00Z or 2024-01-15T10:30:00-05:00).',
-              ),
-          })
-          .optional(),
-        end: z
-          .object({
-            dateTime: z
-              .string()
-              .describe(
-                'The new end time in strict ISO 8601 format with seconds and timezone (e.g., 2024-01-15T11:30:00Z or 2024-01-15T11:30:00-05:00).',
-              ),
-          })
-          .optional(),
+        start: eventDateInputSchema('start').optional(),
+        end: eventDateInputSchema('end').optional(),
         attendees: z
           .array(z.string())
           .optional()
@@ -762,7 +1307,7 @@ async function main() {
     calendarService.updateEvent,
   );
 
-  server.registerTool(
+  registerTool(
     'calendar.respondToEvent',
     {
       description:
@@ -791,7 +1336,7 @@ async function main() {
     calendarService.respondToEvent,
   );
 
-  server.registerTool(
+  registerTool(
     'calendar.deleteEvent',
     {
       description: 'Deletes an event from a calendar.',
@@ -808,7 +1353,7 @@ async function main() {
     calendarService.deleteEvent,
   );
 
-  server.registerTool(
+  registerTool(
     'chat.listSpaces',
     {
       description: 'Lists the spaces the user is a member of.',
@@ -818,7 +1363,7 @@ async function main() {
     chatService.listSpaces,
   );
 
-  server.registerTool(
+  registerTool(
     'chat.findSpaceByName',
     {
       description: 'Finds a Google Chat space by its display name.',
@@ -832,7 +1377,7 @@ async function main() {
     chatService.findSpaceByName,
   );
 
-  server.registerTool(
+  registerTool(
     'chat.sendMessage',
     {
       description: 'Sends a message to a Google Chat space.',
@@ -854,7 +1399,7 @@ async function main() {
     chatService.sendMessage,
   );
 
-  server.registerTool(
+  registerTool(
     'chat.getMessages',
     {
       description: 'Gets messages from a Google Chat space.',
@@ -892,7 +1437,7 @@ async function main() {
     chatService.getMessages,
   );
 
-  server.registerTool(
+  registerTool(
     'chat.sendDm',
     {
       description: 'Sends a direct message to a user.',
@@ -913,7 +1458,7 @@ async function main() {
     chatService.sendDm,
   );
 
-  server.registerTool(
+  registerTool(
     'chat.findDmByEmail',
     {
       description: "Finds a Google Chat DM space by a user's email address.",
@@ -928,7 +1473,7 @@ async function main() {
     chatService.findDmByEmail,
   );
 
-  server.registerTool(
+  registerTool(
     'chat.listThreads',
     {
       description:
@@ -953,7 +1498,7 @@ async function main() {
     chatService.listThreads,
   );
 
-  server.registerTool(
+  registerTool(
     'chat.setUpSpace',
     {
       description:
@@ -971,7 +1516,7 @@ async function main() {
   );
 
   // Gmail tools
-  server.registerTool(
+  registerTool(
     'gmail.search',
     {
       description: 'Search for emails in Gmail using query parameters.',
@@ -1006,7 +1551,7 @@ async function main() {
     gmailService.search,
   );
 
-  server.registerTool(
+  registerTool(
     'gmail.get',
     {
       description: 'Get the full content of a specific email message.',
@@ -1022,7 +1567,7 @@ async function main() {
     gmailService.get,
   );
 
-  server.registerTool(
+  registerTool(
     'gmail.downloadAttachment',
     {
       description:
@@ -1044,7 +1589,7 @@ async function main() {
     gmailService.downloadAttachment,
   );
 
-  server.registerTool(
+  registerTool(
     'gmail.modify',
     {
       description: `Modify a Gmail message. Supported modifications include:
@@ -1082,7 +1627,7 @@ There are a list of system labels that can be modified on a message:
     gmailService.modify,
   );
 
-  server.registerTool(
+  registerTool(
     'gmail.batchModify',
     {
       description: `Bulk modify up to 1,000 Gmail messages at once. Applies the same label changes to all specified messages in a single API call. This is much more efficient than modifying messages individually.
@@ -1122,7 +1667,7 @@ System labels that can be modified:
     gmailService.batchModify,
   );
 
-  server.registerTool(
+  registerTool(
     'gmail.modifyThread',
     {
       description: `Modify labels on all messages in a Gmail thread. This applies label changes to every message in the thread at once, which is useful for operations like marking an entire conversation as read.
@@ -1154,7 +1699,7 @@ System labels that can be modified:
     gmailService.modifyThread,
   );
 
-  server.registerTool(
+  registerTool(
     'gmail.send',
     {
       description: 'Send an email message.',
@@ -1163,7 +1708,7 @@ System labels that can be modified:
     gmailService.send,
   );
 
-  server.registerTool(
+  registerTool(
     'gmail.createDraft',
     {
       description: 'Create a draft email message.',
@@ -1175,12 +1720,18 @@ System labels that can be modified:
           .describe(
             'The thread ID to create the draft as a reply to. When provided, the draft will be linked to the existing thread with appropriate reply headers.',
           ),
+        attachments: z
+          .array(gmailAttachmentSchema)
+          .optional()
+          .describe(
+            'Files to attach to the draft. Each entry must reference an absolute local path. Download attachments first with gmail.downloadAttachment if needed.',
+          ),
       },
     },
     gmailService.createDraft,
   );
 
-  server.registerTool(
+  registerTool(
     'gmail.sendDraft',
     {
       description: 'Send a previously created draft email.',
@@ -1191,7 +1742,7 @@ System labels that can be modified:
     gmailService.sendDraft,
   );
 
-  server.registerTool(
+  registerTool(
     'gmail.listLabels',
     {
       description: "List all Gmail labels in the user's mailbox.",
@@ -1201,7 +1752,7 @@ System labels that can be modified:
     gmailService.listLabels,
   );
 
-  server.registerTool(
+  registerTool(
     'gmail.createLabel',
     {
       description:
@@ -1226,7 +1777,7 @@ System labels that can be modified:
   );
 
   // Time tools
-  server.registerTool(
+  registerTool(
     'time.getCurrentDate',
     {
       description:
@@ -1237,7 +1788,7 @@ System labels that can be modified:
     timeService.getCurrentDate,
   );
 
-  server.registerTool(
+  registerTool(
     'time.getCurrentTime',
     {
       description:
@@ -1248,7 +1799,7 @@ System labels that can be modified:
     timeService.getCurrentTime,
   );
 
-  server.registerTool(
+  registerTool(
     'time.getTimeZone',
     {
       description:
@@ -1260,7 +1811,7 @@ System labels that can be modified:
   );
 
   // People tools
-  server.registerTool(
+  registerTool(
     'people.getUserProfile',
     {
       description: "Gets a user's profile information.",
@@ -1285,7 +1836,7 @@ System labels that can be modified:
     peopleService.getUserProfile,
   );
 
-  server.registerTool(
+  registerTool(
     'people.getMe',
     {
       description: 'Gets the profile information of the authenticated user.',
@@ -1295,7 +1846,7 @@ System labels that can be modified:
     peopleService.getMe,
   );
 
-  server.registerTool(
+  registerTool(
     'people.getUserRelations',
     {
       description:
@@ -1317,6 +1868,141 @@ System labels that can be modified:
       ...readOnlyToolProps,
     },
     peopleService.getUserRelations,
+  );
+
+  // Tasks tools (gated behind the tasks feature groups; default-OFF)
+  registerTool(
+    'tasks.listLists',
+    {
+      description: "Lists the authenticated user's task lists.",
+      inputSchema: {
+        maxResults: z
+          .number()
+          .optional()
+          .describe('Maximum number of task lists to return.'),
+        pageToken: z
+          .string()
+          .optional()
+          .describe('Token for the next page of results.'),
+      },
+      ...readOnlyToolProps,
+    },
+    tasksService.listTaskLists,
+  );
+
+  registerTool(
+    'tasks.list',
+    {
+      description: 'Lists tasks in a specific task list.',
+      inputSchema: {
+        taskListId: z.string().describe('The ID of the task list.'),
+        showCompleted: z
+          .boolean()
+          .optional()
+          .describe('Whether to show completed tasks.'),
+        showDeleted: z
+          .boolean()
+          .optional()
+          .describe('Whether to show deleted tasks.'),
+        showHidden: z
+          .boolean()
+          .optional()
+          .describe('Whether to show hidden tasks.'),
+        showAssigned: z
+          .boolean()
+          .optional()
+          .describe('Whether to show tasks assigned from Docs or Chat.'),
+        maxResults: z
+          .number()
+          .optional()
+          .describe('Maximum number of tasks to return.'),
+        pageToken: z
+          .string()
+          .optional()
+          .describe('Token for the next page of results.'),
+        dueMin: z
+          .string()
+          .optional()
+          .describe(
+            'Lower bound for a task\'s due date (as a RFC 3339 timestamp, e.g., "2024-01-15T12:00:00Z").',
+          ),
+        dueMax: z
+          .string()
+          .optional()
+          .describe(
+            'Upper bound for a task\'s due date (as a RFC 3339 timestamp, e.g., "2024-01-15T12:00:00Z").',
+          ),
+      },
+      ...readOnlyToolProps,
+    },
+    tasksService.listTasks,
+  );
+
+  registerTool(
+    'tasks.create',
+    {
+      description: 'Creates a new task in the specified task list.',
+      inputSchema: {
+        taskListId: z.string().describe('The ID of the task list.'),
+        title: z.string().describe('The title of the task.'),
+        notes: z.string().optional().describe('Notes for the task.'),
+        due: z
+          .string()
+          .optional()
+          .describe(
+            'The due date for the task (as a RFC 3339 timestamp, e.g., "2024-01-15T12:00:00Z").',
+          ),
+      },
+    },
+    tasksService.createTask,
+  );
+
+  registerTool(
+    'tasks.update',
+    {
+      description: 'Updates an existing task.',
+      inputSchema: {
+        taskListId: z.string().describe('The ID of the task list.'),
+        taskId: z.string().describe('The ID of the task to update.'),
+        title: z.string().optional().describe('The new title of the task.'),
+        notes: z.string().optional().describe('The new notes for the task.'),
+        status: z
+          .enum(['needsAction', 'completed'])
+          .optional()
+          .describe('The new status of the task.'),
+        due: z
+          .string()
+          .optional()
+          .describe(
+            'The new due date for the task (as a RFC 3339 timestamp, e.g., "2024-01-15T12:00:00Z").',
+          ),
+      },
+    },
+    tasksService.updateTask,
+  );
+
+  registerTool(
+    'tasks.complete',
+    {
+      description: 'Completes a task (convenience wrapper around update).',
+      inputSchema: {
+        taskListId: z.string().describe('The ID of the task list.'),
+        taskId: z.string().describe('The ID of the task to complete.'),
+      },
+    },
+    tasksService.completeTask,
+  );
+
+  registerTool(
+    'tasks.delete',
+    {
+      description: 'Deletes a task.',
+      inputSchema: {
+        taskListId: z.string().describe('The ID of the task list.'),
+        taskId: z.string().describe('The ID of the task to delete.'),
+      },
+    },
+    tasksService.deleteTask,
   );
 
   // 4. Register MCP resources exposing behavioral context and per-service skill guides.
